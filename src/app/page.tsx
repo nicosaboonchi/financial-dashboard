@@ -7,14 +7,28 @@ import {
   ItemContent,
   ItemDescription,
   ItemGroup,
+  ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
 import { fmtCurrency } from "@/lib/utils";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+
+type Account = {
+  id: string;
+  plaid_account_id: string;
+  name: string;
+  subtype: string;
+  mask: string;
+  iso_currency_code: string;
+  user_id: string;
+};
 
 export default function Home() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [accounts, setAccounts] = useState<AccountBase[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [snapshots, setSnapshots] = useState<
+    { account_id: string; balance: number }[]
+  >([]);
 
   const handleConnectBank = async () => {
     try {
@@ -42,20 +56,11 @@ export default function Home() {
         },
         body: JSON.stringify({ access_token }),
       });
-      const { accounts } = await accountsResponse.json();
+      const { accounts, snapshots } = await accountsResponse.json();
       setAccounts(accounts);
-
-      const transactionsResponse = await fetch("/api/plaid/transactions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ access_token }),
-      });
-      const { transactions } = await transactionsResponse.json();
-      setTransactions(transactions);
-    } catch (err) {
-      console.error("Error connecting bank account:", err);
+      setSnapshots(snapshots);
+    } catch (error) {
+      console.error("Error connecting bank account:", error);
     }
   };
 
@@ -69,29 +74,31 @@ export default function Home() {
       <h2>Accounts:</h2>
       <ItemGroup>
         {accounts.map((account) => (
-          <Item variant="muted" key={account.account_id}>
-            <ItemContent>
-              <ItemTitle>{account.name}</ItemTitle>
-              <ItemDescription>
-                {fmtCurrency(
-                  account.balances.current,
-                  account.balances.iso_currency_code,
-                )}
-              </ItemDescription>
-            </ItemContent>
-          </Item>
-        ))}
-      </ItemGroup>
-      <h2>Transactions:</h2>
-      <ItemGroup>
-        {transactions.map((transaction) => (
-          <Item variant="muted" key={transaction.transaction_id}>
-            <ItemContent>
-              <ItemTitle>{transaction.name}</ItemTitle>
-              <ItemDescription>
-                {fmtCurrency(transaction.amount, transaction.iso_currency_code)}{" "}
-                on {new Date(transaction.date).toLocaleDateString()}
-              </ItemDescription>
+          <Item variant="muted" key={account.plaid_account_id}>
+            <ItemContent className="flex flex-row items-center justify-between">
+              <div className="flex flex-col gap-0.5">
+                <ItemTitle className="items-baseline gap-1">
+                  {account.name}
+                  <small className="text-muted-foreground text-xs">
+                    (...{account.mask})
+                  </small>
+                </ItemTitle>
+                <ItemDescription className="capitalize">
+                  {account.subtype}
+                </ItemDescription>
+              </div>
+              <div className="flex flex-col items-end gap-0.5">
+                <span className="text-sm font-semibold">
+                  {fmtCurrency(
+                    snapshots.find((s) => s.account_id === account.id)
+                      ?.balance || 0,
+                    account.iso_currency_code,
+                  )}
+                </span>
+                <small className="text-muted-foreground text-xs">
+                  Available Balance
+                </small>
+              </div>
             </ItemContent>
           </Item>
         ))}

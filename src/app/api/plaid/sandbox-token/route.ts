@@ -1,4 +1,4 @@
-import { plaidClient } from "@/lib/plaid";
+import { plaidClient } from "@/lib/plaid/plaid";
 import { NextResponse } from "next/server";
 import { Products } from "plaid";
 

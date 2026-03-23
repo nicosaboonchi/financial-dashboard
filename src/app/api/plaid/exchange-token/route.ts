@@ -1,4 +1,4 @@
-import { plaidClient } from "@/lib/plaid";
+import { plaidClient } from "@/lib/plaid/plaid";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
