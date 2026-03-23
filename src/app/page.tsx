@@ -1,7 +1,7 @@
 "use client";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
-import { AccountBase } from "plaid";
+import { AccountBase, Transaction } from "plaid";
 import {
   Item,
   ItemContent,
@@ -9,10 +9,12 @@ import {
   ItemGroup,
   ItemTitle,
 } from "@/components/ui/item";
+import { fmtCurrency } from "@/lib/utils";
 
 export default function Home() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<AccountBase[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   const handleConnectBank = async () => {
     try {
@@ -42,21 +44,23 @@ export default function Home() {
       });
       const { accounts } = await accountsResponse.json();
       setAccounts(accounts);
+
+      const transactionsResponse = await fetch("/api/plaid/transactions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ access_token }),
+      });
+      const { transactions } = await transactionsResponse.json();
+      setTransactions(transactions);
     } catch (err) {
       console.error("Error connecting bank account:", err);
     }
   };
 
-  const fmtCurrency = (amount: number | null, currency: string | null) => {
-    if (amount === null || currency === null) return "";
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-    }).format(amount);
-  };
-
   return (
-    <main className="max-w-lg mx-auto">
+    <main className="max-w-lg mx-auto p-4">
       <h1>Financial Dashboard</h1>
       <Button variant="outline" onClick={handleConnectBank}>
         Connect your bank account
@@ -73,6 +77,20 @@ export default function Home() {
                   account.balances.current,
                   account.balances.iso_currency_code,
                 )}
+              </ItemDescription>
+            </ItemContent>
+          </Item>
+        ))}
+      </ItemGroup>
+      <h2>Transactions:</h2>
+      <ItemGroup>
+        {transactions.map((transaction) => (
+          <Item variant="muted" key={transaction.transaction_id}>
+            <ItemContent>
+              <ItemTitle>{transaction.name}</ItemTitle>
+              <ItemDescription>
+                {fmtCurrency(transaction.amount, transaction.iso_currency_code)}{" "}
+                on {new Date(transaction.date).toLocaleDateString()}
               </ItemDescription>
             </ItemContent>
           </Item>
