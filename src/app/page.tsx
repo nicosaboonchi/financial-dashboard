@@ -64,16 +64,28 @@ export default function Home() {
     }
   };
 
+  const handleRefresh = async () => {
+    const response = await fetch("/api/plaid/accounts", {
+      method: "POST",
+    });
+    const { accounts, snapshots } = await response.json();
+    setAccounts(accounts);
+    setSnapshots(snapshots);
+  };
+
   return (
     <main className="max-w-lg mx-auto p-4">
       <h1>Financial Dashboard</h1>
       <Button variant="outline" onClick={handleConnectBank}>
         Connect your bank account
       </Button>
+      <Button variant="outline" onClick={handleRefresh} className="ml-2">
+        Refresh Balances
+      </Button>
       <p>Access Token: {accessToken}</p>
       <h2>Accounts:</h2>
       <ItemGroup>
-        {accounts.map((account) => (
+        {accounts?.map((account) => (
           <Item variant="muted" key={account.plaid_account_id}>
             <ItemContent className="flex flex-row items-center justify-between">
               <div className="flex flex-col gap-0.5">
