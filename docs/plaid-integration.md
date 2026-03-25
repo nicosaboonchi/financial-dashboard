@@ -45,3 +45,30 @@ Offers the `/sandbox/public_token/create` endpoint which allows to create a `pub
 3. API route queries `plaid_items` for all active `access_tokens`
 4. For each token, calls `/accounts/balance/get`
 5. Balances and timestamps are then updated in Supabase
+
+## Sync and Refresh
+
+### How it works
+Balances can be synced in 2 ways:
+- **Scheduled:** Vercel cron will automatically run once a day, attempting to fetch the most current balances
+- **Manual:** Users can trigger a manual refresh by clicking a button on the app for live data (limited to once per hour)
+
+Both paths will trigger the `api/plaid/sync` route
+
+### Snapshot Upsert Strategy 
+Snapshots will be updated rather than inserted on every sync, if a balance has already been updated for the current day we will update the balance and the recorded date and time, rather than creating a new record.
+
+conflict target: `(account_id, date)`
+
+On conflict:
+- Update `balance`
+- Update `updated_at`
+
+This means each account has at most one snapshot per day — the most
+recent balance reading for that day wins.
+
+### Why Upsert over Insert
+- We prevent duplicate rows with the same balance, balances rarely change on an hour to hour basis
+- Our chart focuses on long term growth, we dont care about hour by hour changes only day to day
+- Keeps the queries simple and less costly since we only need to get the rows for each day 
+- Daily and manual refresh stay idompotent, meaning the same operation returns the same outcome
