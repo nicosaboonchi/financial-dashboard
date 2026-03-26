@@ -22,5 +22,4 @@ A net worth tracker that connects to financial institutions via Plaid, stores hi
 ## Contraints
 
 - Access token **NEVER** leaves the server
-- Client only ever reads from the Supbase tables
 - All Plaid API calls happen in API routes using the service role key
