@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,43 +23,73 @@ import Link from "next/link";
 
 const supabase = createClient();
 
-export function LoginForm({
+export function SignUpForm({
   className,
   ...props
 }: React.ComponentProps<"div">) {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
 
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    // 1. Set the error to null
     setError(null);
-    setLoading(true);
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    setLoading(false);
-
-    if (error) {
-      setError(error.message);
+    // 2. check if password == confirmation password
+    // if not set error to "passwords do not match" and return
+    if (password != confirmPassword) {
+      setError("Passwords do not match");
       return;
     }
+    // 4. if they do match set loading to true
+    setLoading(true);
+    // 5. try to sign up user .signup with email and password
+    try {
+      const { error } = await supabase.auth.signUp({
+        email: email,
+        password: password,
+      });
+      // 6. if error set error to error message and set loading to false
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      setConfirmed(true);
+    } catch {
+      setError("An unexpected error occurred. Please try again.");
+    } finally {
+      // 7. if no error, set loading to false, show confirmation message
+      setLoading(false);
+    }
+  }
 
-    router.push("/");
+  if (confirmed) {
+    return (
+      <div className={cn("flex flex-col gap-6", className)} {...props}>
+        <Card>
+          <CardHeader>
+            <CardTitle>Check your email</CardTitle>
+            <CardDescription>
+              We sent a confirmation link to <strong>{email}</strong>. Open it
+              to activate your account.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    );
   }
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
       <Card>
         <CardHeader>
-          <CardTitle>Login to your account</CardTitle>
+          <CardTitle>Sign up for an account</CardTitle>
           <CardDescription>
-            Enter your email below to login to your account
+            Enter your email below to create a new account
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -78,21 +107,25 @@ export function LoginForm({
                 />
               </Field>
               <Field>
-                <div className="flex items-center">
-                  <FieldLabel htmlFor="password">Password</FieldLabel>
-                  <a
-                    href="#"
-                    className="ml-auto inline-block text-sm underline-offset-4 hover:underline"
-                  >
-                    Forgot your password?
-                  </a>
-                </div>
+                <FieldLabel htmlFor="password">Password</FieldLabel>
                 <Input
                   id="password"
                   type="password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="confirm-password">
+                  Confirm Password
+                </FieldLabel>
+                <Input
+                  id="confirm-password"
+                  type="password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
                 />
               </Field>
               {error && (
@@ -102,11 +135,10 @@ export function LoginForm({
               )}
               <Field>
                 <Button type="submit" disabled={loading}>
-                  {loading ? "Logging in..." : "Login"}
+                  {loading ? "Signing up..." : "Sign up"}
                 </Button>
                 <FieldDescription className="text-center">
-                  Don&apos;t have an account?{" "}
-                  <Link href="/signup">Sign up</Link>
+                  Already have an account? <Link href="/login">Login</Link>
                 </FieldDescription>
               </Field>
             </FieldGroup>
