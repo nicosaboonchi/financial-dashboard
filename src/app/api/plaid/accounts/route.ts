@@ -1,73 +1,35 @@
 import { plaidClient } from "@/lib/plaid/plaid";
-import { supabase } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 
-export async function POST() {
+export async function GET() {
   try {
-    const access_token = process.env.PLAID_SANDBOX_ACCESS_TOKEN!;
+    const supabase = await createClient();
+    // 1. get authenticated user
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    const response = await plaidClient.accountsBalanceGet({ access_token });
-    const accounts = response.data.accounts;
-
-    const mappedAccounts = accounts.map((account) => ({
-      plaid_account_id: account.account_id,
-      name: account.name,
-      official_name: account.official_name,
-      type: account.type,
-      subtype: account.subtype,
-      mask: account.mask,
-      iso_currency_code: account.balances.iso_currency_code,
-      user_id: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-      updated_at: new Date().toISOString(),
-    }));
-
+    // 2. get all items for the user
     const { data, error } = await supabase
-      .from("accounts")
-      .upsert(mappedAccounts, { onConflict: "plaid_account_id" })
-      .select();
+      .from("items")
+      .select("*")
+      .eq("user_id", user.id);
+    if (error) throw new Error(error.message);
 
-    console.log(error);
+    // 3. for each item call accountsBalanceGet endpoint using the access token
+    for (const item of data) {
+      const response = await plaidClient.accountsBalanceGet({
+        access_token: item.plaid_access_token,
+      });
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.log("Plaid accounts balance response:", response.data);
     }
-
-    const accountLookup = data.reduce(
-      (acc, account) => {
-        acc[account.plaid_account_id] = account.id;
-        return acc;
-      },
-      {} as Record<string, string>,
-    );
-
-    const mappedSnapshots = accounts?.map((account) => ({
-      account_id: accountLookup[account.account_id],
-      balance: account.balances.current,
-      recorded_at: new Date().toISOString(),
-    }));
-
-    const { data: snapshots, error: snapshotsError } = await supabase
-      .from("balance_snapshots")
-      .upsert(mappedSnapshots, {
-        onConflict: "account_id,recorded_date",
-        ignoreDuplicates: false,
-      })
-      .select();
-
-    console.log("snapshots:", snapshots);
-    console.log("snapshotsError:", snapshotsError);
-
-    if (snapshotsError) {
-      return NextResponse.json(
-        { error: snapshotsError.message },
-        { status: 500 },
-      );
-    }
-
-    return NextResponse.json(
-      { accounts: data, snapshots: snapshots },
-      { status: 200 },
-    );
+    // 4. upsert the accounts and snapshots in the database
+    // 5. return the accounts and snapshots from the database
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });

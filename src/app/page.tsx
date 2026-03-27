@@ -24,7 +24,6 @@ type Account = {
 };
 
 export default function Home() {
-  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [snapshots, setSnapshots] = useState<
     { account_id: string; balance: number }[]
@@ -37,28 +36,13 @@ export default function Home() {
       const { public_token } = await publicTokenResponse.json();
 
       // Step 2: Exchange the public token for an access token
-      const exchangeResponse = await fetch("/api/plaid/exchange-token", {
+      await fetch("/api/plaid/exchange-token", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ public_token }),
       });
-      const { access_token } = await exchangeResponse.json();
-
-      // Store the access token in state (or context)
-      setAccessToken(access_token);
-
-      const accountsResponse = await fetch("/api/plaid/accounts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ access_token }),
-      });
-      const { accounts, snapshots } = await accountsResponse.json();
-      setAccounts(accounts);
-      setSnapshots(snapshots);
     } catch (error) {
       console.error("Error connecting bank account:", error);
     }
@@ -66,11 +50,9 @@ export default function Home() {
 
   const handleRefresh = async () => {
     const response = await fetch("/api/plaid/accounts", {
-      method: "POST",
+      method: "GET",
     });
     const { accounts, snapshots } = await response.json();
-    setAccounts(accounts);
-    setSnapshots(snapshots);
   };
 
   return (
@@ -82,7 +64,6 @@ export default function Home() {
       <Button variant="outline" onClick={handleRefresh} className="ml-2">
         Refresh Balances
       </Button>
-      <p>Access Token: {accessToken}</p>
       <h2>Accounts:</h2>
       <ItemGroup>
         {accounts?.map((account) => (
