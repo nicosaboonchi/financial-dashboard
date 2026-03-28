@@ -14,50 +14,48 @@ export async function GET() {
     // 1. fetch all accounts for this user
     const { data: accounts, error: accountsError } = await supabase
       .from("accounts")
-      .select("id, plaid_account_id, name, type, subtype, mask, iso_currency_code")
+      .select("id, type")
       .eq("user_id", claims.sub);
 
     if (accountsError) {
       return NextResponse.json({ error: accountsError.message }, { status: 500 });
     }
     if (!accounts || accounts.length === 0) {
-      return NextResponse.json({ accounts: [] });
+      return NextResponse.json({ history: [] });
     }
 
-    // 2. fetch latest balance snapshot per account in one query
+    // 2. fetch all balance snapshots for those accounts, oldest first
     const accountIds = accounts.map((a) => a.id);
     const { data: snapshots, error: snapshotError } = await supabase
       .from("balance_snapshots")
-      .select("account_id, balance, recorded_at, recorded_date")
+      .select("account_id, balance, recorded_date")
       .in("account_id", accountIds)
-      .order("recorded_date", { ascending: false });
+      .order("recorded_date", { ascending: true });
 
     if (snapshotError) {
       return NextResponse.json({ error: snapshotError.message }, { status: 500 });
     }
 
-    // take the first (latest) snapshot per account
-    const latestSnapshot = new Map<string, { balance: number; recorded_at: string }>();
+    // 3. build type map for net worth calculation (assets vs liabilities)
+    const typeMap = new Map<string, string>(accounts.map((a) => [a.id, a.type]));
+
+    // 4. group by date and compute net worth per day
+    const byDate = new Map<string, number>();
     for (const snap of snapshots ?? []) {
-      if (!latestSnapshot.has(snap.account_id)) {
-        latestSnapshot.set(snap.account_id, {
-          balance: snap.balance,
-          recorded_at: snap.recorded_at,
-        });
-      }
+      const type = typeMap.get(snap.account_id);
+      const balance = snap.balance ?? 0;
+      // credit and loan balances reduce net worth
+      const delta =
+        type === "credit" || type === "loan" ? -balance : balance;
+      byDate.set(snap.recorded_date, (byDate.get(snap.recorded_date) ?? 0) + delta);
     }
 
-    // 3. merge accounts with their latest snapshot
-    const result = accounts.map((account) => {
-      const snap = latestSnapshot.get(account.id);
-      return {
-        ...account,
-        balance: snap?.balance ?? null,
-        last_synced_at: snap?.recorded_at ?? null,
-      };
-    });
+    const history = Array.from(byDate.entries()).map(([date, net_worth]) => ({
+      date,
+      net_worth,
+    }));
 
-    return NextResponse.json({ accounts: result });
+    return NextResponse.json({ history });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
