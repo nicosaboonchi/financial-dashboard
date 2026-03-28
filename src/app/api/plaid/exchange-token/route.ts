@@ -1,3 +1,4 @@
+import { encrypt } from "@/lib/crypto";
 import { plaidClient } from "@/lib/plaid/plaid";
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
       .from("items")
       .insert({
         user_id: claims.sub,
-        plaid_access_token: access_token,
+        plaid_access_token: encrypt(access_token),
         plaid_item_id: item_id,
         status: "connected",
       })

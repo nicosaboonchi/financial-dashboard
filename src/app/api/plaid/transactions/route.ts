@@ -1,3 +1,4 @@
+import { decrypt } from "@/lib/crypto";
 import { plaidClient } from "@/lib/plaid/plaid";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
 
     // 4. fetch transactions from Plaid
     const response = await plaidClient.transactionsSync({
-      access_token: item.plaid_access_token,
+      access_token: decrypt(item.plaid_access_token),
     });
 
     return NextResponse.json({ transactions: response.data.added });

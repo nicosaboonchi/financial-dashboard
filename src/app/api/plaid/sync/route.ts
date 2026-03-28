@@ -1,3 +1,4 @@
+import { decrypt } from "@/lib/crypto";
 import { plaidClient } from "@/lib/plaid/plaid";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
@@ -28,7 +29,7 @@ export async function GET() {
     // 2. fetch balances from Plaid for all items in parallel
     const plaidResults = await Promise.all(
       items.map((item) =>
-        plaidClient.accountsBalanceGet({ access_token: item.plaid_access_token })
+        plaidClient.accountsBalanceGet({ access_token: decrypt(item.plaid_access_token) })
       )
     );
 
