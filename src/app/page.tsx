@@ -1,4 +1,9 @@
 "use client";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -9,7 +14,11 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import { fmtCurrency } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { usePlaidLink } from "react-plaid-link";
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 type Account = {
   id: string;
@@ -23,6 +32,12 @@ type Account = {
   last_synced_at: string | null;
 };
 
+type HistoryPoint = { date: string; net_worth: number };
+
+type Period = "1M" | "3M" | "6M" | "YTD" | "1Y" | "ALL";
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 const GROUP_LABELS: Record<string, string> = {
   depository: "Cash",
   credit: "Credit Cards",
@@ -31,6 +46,14 @@ const GROUP_LABELS: Record<string, string> = {
 };
 
 const GROUP_ORDER = ["depository", "credit", "investment", "loan"];
+
+const PERIODS: Period[] = ["1M", "3M", "6M", "YTD", "1Y", "ALL"];
+
+const chartConfig = {
+  net_worth: { label: "Net Worth", color: "hsl(var(--chart-1, 174 72% 56%))" },
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatRelativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -42,60 +65,123 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-async function fetchAccounts(): Promise<Account[]> {
+function filterByPeriod(history: HistoryPoint[], period: Period): HistoryPoint[] {
+  if (period === "ALL") return history;
+  const now = new Date();
+  let cutoff: Date;
+  if (period === "1M") cutoff = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+  else if (period === "3M") cutoff = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+  else if (period === "6M") cutoff = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+  else if (period === "YTD") cutoff = new Date(now.getFullYear(), 0, 1);
+  else cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()); // 1Y
+  const cutoffStr = cutoff.toISOString().split("T")[0];
+  return history.filter((p) => p.date >= cutoffStr);
+}
+
+function formatXAxisDate(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+async function loadAccounts(): Promise<Account[]> {
   const res = await fetch("/api/supabase/accounts");
   const data = await res.json();
   return data.accounts ?? [];
 }
 
+async function loadHistory(): Promise<HistoryPoint[]> {
+  const res = await fetch("/api/supabase/net-worth-history");
+  const data = await res.json();
+  return data.history ?? [];
+}
+
+// ─── Component ───────────────────────────────────────────────────────────────
+
 export default function Home() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [period, setPeriod] = useState<Period>("1M");
+  const [linkToken, setLinkToken] = useState<string | null>(null);
 
+  // Load accounts + history on mount
   useEffect(() => {
-    fetchAccounts()
-      .then(setAccounts)
+    Promise.all([loadAccounts(), loadHistory()])
+      .then(([accts, hist]) => {
+        setAccounts(accts);
+        setHistory(hist);
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  // ── Plaid Link ──────────────────────────────────────────────────────────
+
+  const onPlaidSuccess = useCallback(
+    async (public_token: string) => {
+      setConnecting(true);
+      setLinkToken(null);
+      try {
+        await fetch("/api/plaid/exchange-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ public_token }),
+        });
+        const [accts, hist] = await Promise.all([loadAccounts(), loadHistory()]);
+        setAccounts(accts);
+        setHistory(hist);
+      } catch (err) {
+        console.error("Failed to exchange token:", err);
+      } finally {
+        setConnecting(false);
+      }
+    },
+    []
+  );
+
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    onSuccess: onPlaidSuccess,
+  });
+
+  // Open Link as soon as the token is ready
+  useEffect(() => {
+    if (linkToken && ready) open();
+  }, [linkToken, ready, open]);
 
   async function handleConnectBank() {
     setConnecting(true);
     try {
-      const sandboxRes = await fetch("/api/plaid/sandbox-token");
-      const { public_token } = await sandboxRes.json();
-
-      await fetch("/api/plaid/exchange-token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ public_token }),
-      });
-
-      // re-fetch from DB so state stays consistent with the server
-      const updated = await fetchAccounts();
-      setAccounts(updated);
+      const res = await fetch("/api/plaid/link-token", { method: "POST" });
+      const { link_token, error } = await res.json();
+      if (error) throw new Error(error);
+      setLinkToken(link_token);
     } catch (err) {
-      console.error("Failed to connect bank account:", err);
-    } finally {
+      console.error("Failed to create link token:", err);
       setConnecting(false);
     }
+    // connecting stays true until onPlaidSuccess finishes
   }
+
+  // ── Refresh ─────────────────────────────────────────────────────────────
 
   async function handleRefresh() {
     setRefreshing(true);
     try {
       await fetch("/api/plaid/sync");
-      const updated = await fetchAccounts();
-      setAccounts(updated);
+      const [accts, hist] = await Promise.all([loadAccounts(), loadHistory()]);
+      setAccounts(accts);
+      setHistory(hist);
     } catch (err) {
-      console.error("Failed to refresh accounts:", err);
+      console.error("Failed to refresh:", err);
     } finally {
       setRefreshing(false);
     }
   }
 
-  // net worth: assets minus liabilities
+  // ── Derived data ─────────────────────────────────────────────────────────
+
   const assets = accounts
     .filter((a) => a.type === "depository" || a.type === "investment")
     .reduce((sum, a) => sum + (a.balance ?? 0), 0);
@@ -109,6 +195,17 @@ export default function Home() {
     label: GROUP_LABELS[type],
     accounts: accounts.filter((a) => a.type === type),
   })).filter((g) => g.accounts.length > 0);
+
+  const chartData = filterByPeriod(history, period);
+
+  const yMin = chartData.length
+    ? Math.floor(Math.min(...chartData.map((p) => p.net_worth)) * 0.98)
+    : 0;
+  const yMax = chartData.length
+    ? Math.ceil(Math.max(...chartData.map((p) => p.net_worth)) * 1.02)
+    : 1;
+
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <main className="max-w-lg mx-auto p-4 flex flex-col gap-6">
@@ -134,19 +231,99 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Net worth */}
+      {/* Net worth + chart */}
       <Card>
-        <CardContent className="py-4">
-          <p className="text-sm text-muted-foreground">Net Worth</p>
-          <p className="text-3xl font-bold">
-            {loading ? "—" : fmtCurrency(netWorth, "USD")}
-          </p>
+        <CardContent className="pt-4 pb-2 flex flex-col gap-4">
+          {/* Net worth total */}
+          <div>
+            <p className="text-sm text-muted-foreground">Net Worth</p>
+            <p className="text-3xl font-bold">
+              {loading ? "—" : fmtCurrency(netWorth, "USD")}
+            </p>
+          </div>
+
+          {/* Area chart */}
+          {chartData.length > 0 && (
+            <ChartContainer config={chartConfig} className="h-40 w-full">
+              <AreaChart
+                data={chartData}
+                margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
+              >
+                <defs>
+                  <linearGradient id="netWorthGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-net_worth)" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="var(--color-net_worth)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="date"
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={formatXAxisDate}
+                  tick={{ fontSize: 10 }}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  domain={[yMin, yMax]}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(v) =>
+                    `$${Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : v}`
+                  }
+                  width={40}
+                />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      formatter={(value) =>
+                        fmtCurrency(Number(value), "USD")
+                      }
+                      labelFormatter={formatXAxisDate}
+                    />
+                  }
+                />
+                <Area
+                  type="monotone"
+                  dataKey="net_worth"
+                  stroke="var(--color-net_worth)"
+                  strokeWidth={2}
+                  fill="url(#netWorthGradient)"
+                  dot={false}
+                />
+              </AreaChart>
+            </ChartContainer>
+          )}
+
+          {/* Period filter */}
+          {history.length > 0 && (
+            <div className="flex gap-1">
+              {PERIODS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPeriod(p)}
+                  className={`flex-1 rounded text-xs py-1 transition-colors ${
+                    period === p
+                      ? "bg-foreground text-background font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* Account groups */}
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading accounts...</p>
+        <div className="flex flex-col gap-3">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-14 rounded-lg bg-muted/50 animate-pulse" />
+          ))}
+        </div>
       ) : grouped.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No accounts linked yet. Click &quot;Add account&quot; to get started.
