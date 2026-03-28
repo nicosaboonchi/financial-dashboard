@@ -4,42 +4,89 @@ import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
   try {
-    // 1. Get the public token from the request body
-    const { public_token } = await request.json();
-
-    // 2. Get the authenticated user
+    // 1. verify supabase auth and get authenticated user id
     const supabase = await createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
-    console.log("Received public token:", public_token);
+    // 2. get public token from request body
+    const { public_token } = await request.json();
 
-    // 3. Exchange the public token for an access token
-    const response = await plaidClient.itemPublicTokenExchange({
-      public_token,
+    // 3. exchange public token for access token
+    const {
+      data: { access_token, item_id },
+    } = await plaidClient.itemPublicTokenExchange({ public_token });
+
+    // 4. insert into items
+    const { data: item, error } = await supabase
+      .from("items")
+      .insert({
+        user_id: user?.id,
+        plaid_access_token: access_token,
+        plaid_item_id: item_id,
+        status: "connected",
+      })
+      .select()
+      .single();
+
+    // 5. call plaid /accounts/balances/get
+    const {
+      data: { accounts },
+    } = await plaidClient.accountsBalanceGet({ access_token });
+
+    // 6. upsert accounts into the accounts table
+    const upsertAccounts = accounts.map((account) => {
+      return {
+        user_id: user?.id,
+        plaid_account_id: account.account_id,
+        name: account.name,
+        subtype: account.subtype,
+        mask: account.mask,
+        iso_currency_code: account.balances.iso_currency_code,
+        official_name: account.official_name,
+        type: account.type,
+        plaid_item_id: item.id,
+      };
     });
-    const { access_token, item_id } = response.data;
 
-    console.log("Plaid exchange response:", response.data);
+    const { data, error: upsertError } = await supabase
+      .from("accounts")
+      .upsert(upsertAccounts, { onConflict: "plaid_account_id" })
+      .select();
 
-    // 4. Insert into the database linked to the user
-    const { error: dbError } = await supabase.from("items").insert({
-      user_id: user.id,
-      plaid_access_token: access_token,
-      plaid_item_id: item_id,
-      status: "active",
+    // 7. upsert snapshots (one per account per day)
+
+    const today = new Date().toISOString().split("T")[0];
+
+    const balanceSnapshots = data?.map((account) => {
+      const plaidAccount = accounts.find(
+        (a) => a.account_id === account.plaid_account_id,
+      );
+      return {
+        account_id: account.id,
+        balance: plaidAccount?.balances.current,
+        recorded_date: today,
+      };
     });
 
-    if (dbError) throw new Error(dbError.message);
+    const { error: snapshotError } = await supabase
+      .from("balance_snapshots")
+      .upsert(balanceSnapshots, { onConflict: "account_id, recorded_date" });
 
-    // 5. Return success with the item id
-    return NextResponse.json({ item_id });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    // 8. return account deails + balances in response
+    const return_data = data?.map((account) => {
+      const snapshot = balanceSnapshots?.find(
+        (s) => s.account_id === account.id,
+      );
+      return {
+        ...account,
+        balance: snapshot?.balance,
+      };
+    });
+
+    return NextResponse.json({ accounts: return_data });
+  } catch {
+    return NextResponse.json({ status: 500 });
   }
 }

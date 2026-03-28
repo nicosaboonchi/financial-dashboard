@@ -1,17 +1,14 @@
 "use client";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
-import { AccountBase, Transaction } from "plaid";
 import {
   Item,
   ItemContent,
   ItemDescription,
   ItemGroup,
-  ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
 import { fmtCurrency } from "@/lib/utils";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 type Account = {
   id: string;
@@ -21,48 +18,42 @@ type Account = {
   mask: string;
   iso_currency_code: string;
   user_id: string;
+  balance: number;
 };
 
 export default function Home() {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [snapshots, setSnapshots] = useState<
-    { account_id: string; balance: number }[]
-  >([]);
+  const [loading, setLoading] = useState(false);
 
-  const handleConnectBank = async () => {
+  async function handleConnectBank() {
+    setLoading(true);
     try {
-      // Step 1: Get the public token from the backend
-      const publicTokenResponse = await fetch("/api/plaid/sandbox-token");
-      const { public_token } = await publicTokenResponse.json();
+      // 1. call the api route to create a sandbox public token
+      const res = await fetch("/api/plaid/sandbox-token");
+      const data = await res.json();
+      const public_token = data.public_token;
 
-      // Step 2: Exchange the public token for an access token
-      await fetch("/api/plaid/exchange-token", {
+      // 2. call the api route to exchange the public token for an access token and store it in the database
+      const { accounts } = await fetch("/api/plaid/exchange-token", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ public_token }),
-      });
-    } catch (error) {
-      console.error("Error connecting bank account:", error);
+      }).then((res) => res.json());
+      setAccounts(accounts);
+    } catch (err) {
+      console.error("Failed to connect bank account:", err);
+    } finally {
+      setLoading(false);
     }
-  };
-
-  const handleRefresh = async () => {
-    const response = await fetch("/api/plaid/accounts", {
-      method: "GET",
-    });
-    const { accounts, snapshots } = await response.json();
-  };
+  }
 
   return (
     <main className="max-w-lg mx-auto p-4">
       <h1>Financial Dashboard</h1>
-      <Button variant="outline" onClick={handleConnectBank}>
-        Connect your bank account
-      </Button>
-      <Button variant="outline" onClick={handleRefresh} className="ml-2">
-        Refresh Balances
+      <Button variant="outline" onClick={handleConnectBank} disabled={loading}>
+        {loading ? "Connecting..." : "Connect your bank account"}
       </Button>
       <h2>Accounts:</h2>
       <ItemGroup>
@@ -82,11 +73,7 @@ export default function Home() {
               </div>
               <div className="flex flex-col items-end gap-0.5">
                 <span className="text-sm font-semibold">
-                  {fmtCurrency(
-                    snapshots.find((s) => s.account_id === account.id)
-                      ?.balance || 0,
-                    account.iso_currency_code,
-                  )}
+                  {fmtCurrency(account.balance, account.iso_currency_code)}
                 </span>
                 <small className="text-muted-foreground text-xs">
                   Available Balance
