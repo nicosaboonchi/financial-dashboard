@@ -8,14 +8,16 @@ export async function POST() {
 
   const { data, error } = await supabase.auth.getClaims();
 
-  if (error || !data?.claims) {
+  const user = data?.claims;
+
+  if (error || !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
     const response = await plaidClient.linkTokenCreate({
       user: {
-        client_user_id: data.claims.sub,
+        client_user_id: user.sub,
       },
       client_name: "Financial Dashboard",
       products: [Products.Auth, Products.Transactions],

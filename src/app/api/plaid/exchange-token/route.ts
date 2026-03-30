@@ -1,97 +1,166 @@
 import { plaidClient } from "@/lib/plaid/plaid";
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { CountryCode } from "plaid";
 
 export async function POST(request: Request) {
+  const supabase = await createClient();
+
+  // 1. auth check
+  const { data, error } = await supabase.auth.getClaims();
+
+  const user = data?.claims;
+
+  if (error || !user) {
+    console.error("Unauthorized access to exchange-token endpoint");
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 2. exchange token
+  const { public_token, institution_id, institution_name, link_session_id } =
+    await request.json();
+
+  if (!public_token) {
+    console.error("Missing public token in request body");
+    return NextResponse.json(
+      { error: "Missing public token" },
+      { status: 400 },
+    );
+  }
+
   try {
-    // 1. verify supabase auth and get authenticated user id
-    const supabase = await createClient();
-    const { data: claimsData, error: claimsError } =
-      await supabase.auth.getClaims();
-
-    if (claimsError || !claimsData?.claims) {
-      return NextResponse.json({ status: 401 });
-    }
-
-    const userId = claimsData.claims.sub;
-
-    // 2. get public token from request body
-    const { public_token } = await request.json();
-
-    // 3. exchange public token for access token
-    const {
-      data: { access_token, item_id },
-    } = await plaidClient.itemPublicTokenExchange({ public_token });
-
-    // 4. insert into items
-    const { data: item, error } = await supabase
-      .from("items")
-      .insert({
-        user_id: userId,
-        plaid_access_token: access_token,
-        plaid_item_id: item_id,
-        status: "connected",
-      })
-      .select()
-      .single();
-
-    // 5. call plaid /accounts/balances/get
-    const {
-      data: { accounts },
-    } = await plaidClient.accountsBalanceGet({ access_token });
-
-    // 6. upsert accounts into the accounts table
-    const upsertAccounts = accounts.map((account) => {
-      return {
-        user_id: userId,
-        plaid_account_id: account.account_id,
-        name: account.name,
-        subtype: account.subtype,
-        mask: account.mask,
-        iso_currency_code: account.balances.iso_currency_code,
-        official_name: account.official_name,
-        type: account.type,
-        plaid_item_id: item.id,
-      };
+    console.log("Exchanging public token for access token...");
+    const exchangeResponse = await plaidClient.itemPublicTokenExchange({
+      public_token,
     });
 
-    const { data, error: upsertError } = await supabase
-      .from("accounts")
-      .upsert(upsertAccounts, { onConflict: "plaid_account_id" })
-      .select();
+    const { access_token, item_id } = exchangeResponse.data;
 
-    // 7. upsert snapshots (one per account per day)
+    // 3. fetch institution data from Plaid
+    console.log("Fetching institution data from Plaid...");
+    const institutionResponse = await plaidClient.institutionsGetById({
+      institution_id,
+      country_codes: [CountryCode.Us],
+      options: {
+        include_optional_metadata: true,
+      },
+    });
 
+    // 4. store plaid item
+    console.log("Storing plaid item in database...");
+    const { data: plaidItem, error: plaidItemError } = await supabase
+      .from("plaid_items")
+      .insert({
+        user_id: user.sub,
+        item_id: item_id,
+        access_token: access_token,
+        institution_id: institution_id,
+        institution_name: institution_name,
+        institution_logo: institutionResponse.data.institution.logo,
+        institution_color: institutionResponse.data.institution.primary_color,
+        institution_url: institutionResponse.data.institution.url,
+        link_session_id: link_session_id,
+      })
+      .select("id")
+      .single();
+
+    if (plaidItemError) {
+      console.error("Failed to insert plaid item:", plaidItemError);
+      return NextResponse.json(
+        { error: "Failed to insert plaid item" },
+        { status: 500 },
+      );
+    }
+
+    // 5. fetch accounts data from Plaid
+    console.log("Fetching accounts data from Plaid...");
+    const {
+      data: { accounts },
+    } = await plaidClient.accountsGet({
+      access_token,
+    });
+
+    // 6. build accounts and snapshots data for insertion
     const today = new Date().toISOString().split("T")[0];
 
-    const balanceSnapshots = data?.map((account) => {
+    const accountRows = [];
+
+    for (const account of accounts) {
+      const isAsset = !["credit", "loan"].includes(account.type);
+      accountRows.push({
+        plaid_account_id: account.account_id,
+        user_id: user.sub,
+        item_id: plaidItem?.id,
+        name: account.name,
+        mask: account.mask,
+        type: account.type,
+        subtype: account.subtype,
+        is_asset: isAsset,
+        current_balance: account.balances.current,
+        display_balance: Math.abs(account.balances.current ?? 0),
+        iso_currency_code: account.balances.iso_currency_code,
+        credit_limit: account.balances.limit,
+      });
+    }
+
+    // 7. insert accounts
+    const { data: insertedAccounts, error: accountsError } = await supabase
+      .from("accounts")
+      .insert(accountRows)
+      .select("id, plaid_account_id");
+
+    if (accountsError) {
+      console.error("Failed to insert accounts:", accountsError);
+      return NextResponse.json(
+        { error: "Failed to insert accounts" },
+        { status: 500 },
+      );
+    }
+
+    // 8. build snapshot rows and insert
+    const snapshotRows = insertedAccounts.map((account) => {
       const plaidAccount = accounts.find(
         (a) => a.account_id === account.plaid_account_id,
       );
       return {
         account_id: account.id,
-        balance: plaidAccount?.balances.current,
+        current_balance: plaidAccount?.balances.current,
+        display_balance: Math.abs(plaidAccount?.balances.current ?? 0),
         recorded_date: today,
       };
     });
 
+    // 9. insert snapshots
     const { error: snapshotError } = await supabase
-      .from("balance_snapshots")
-      .upsert(balanceSnapshots, { onConflict: "account_id, recorded_date" });
+      .from("snapshots")
+      .insert(snapshotRows);
 
-    // 8. return account deails + balances in response
-    const return_data = data?.map((account) => {
-      const snapshot = balanceSnapshots?.find(
-        (s) => s.account_id === account.id,
+    if (snapshotError) {
+      console.error("Failed to insert snapshots:", snapshotError);
+      return NextResponse.json(
+        { error: "Failed to insert snapshots" },
+        { status: 500 },
       );
-      return {
-        ...account,
-        balance: snapshot?.balance,
-      };
-    });
+    }
 
-    return NextResponse.json({ accounts: return_data });
+    // 10. return accounts
+    const { data: returnedAccounts, error: returnedAccountsError } =
+      await supabase.from("accounts").select("*");
+
+    if (returnedAccountsError) {
+      console.error("Failed to fetch accounts:", returnedAccountsError);
+      return NextResponse.json(
+        { error: "Failed to fetch accounts" },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ accounts: returnedAccounts });
   } catch {
-    return NextResponse.json({ status: 500 });
+    console.error("Failed to exchange public token");
+    return NextResponse.json(
+      { error: "Failed to exchange public token" },
+      { status: 500 },
+    );
   }
 }
