@@ -6,9 +6,14 @@ export async function POST(request: Request) {
   try {
     // 1. verify supabase auth and get authenticated user id
     const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const { data: claimsData, error: claimsError } =
+      await supabase.auth.getClaims();
+
+    if (claimsError || !claimsData?.claims) {
+      return NextResponse.json({ status: 401 });
+    }
+
+    const userId = claimsData.claims.sub;
 
     // 2. get public token from request body
     const { public_token } = await request.json();
@@ -22,7 +27,7 @@ export async function POST(request: Request) {
     const { data: item, error } = await supabase
       .from("items")
       .insert({
-        user_id: user?.id,
+        user_id: userId,
         plaid_access_token: access_token,
         plaid_item_id: item_id,
         status: "connected",
@@ -38,7 +43,7 @@ export async function POST(request: Request) {
     // 6. upsert accounts into the accounts table
     const upsertAccounts = accounts.map((account) => {
       return {
-        user_id: user?.id,
+        user_id: userId,
         plaid_account_id: account.account_id,
         name: account.name,
         subtype: account.subtype,
